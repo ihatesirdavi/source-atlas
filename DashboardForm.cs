@@ -41,7 +41,7 @@ internal sealed partial class DashboardForm : Form
         MinimumSize = new Size(760, 490);
         StartPosition = FormStartPosition.Manual;
         Size = new Size(1280, 800);
-        BuildInterface();
+        BuildModernInterface();
         RefreshData();
         _timer.Tick += (_, _) => RefreshData();
         _timer.Start();
@@ -147,6 +147,7 @@ internal sealed partial class DashboardForm : Form
         var status = _live.Status;
         _status.Text = "LIVE  /  " + status;
         _status.ForeColor = status is "WATCHING" or "CHECKING" ? Accent : Color.Goldenrod;
+        UpdateModernData();
         if (_tray is not null)
             _tray.Text = ("Source Atlas: " + status)[..Math.Min(63, ("Source Atlas: " + status).Length)];
     }
@@ -438,6 +439,7 @@ internal sealed partial class DashboardForm : Form
     {
         if (index < 0 || index >= _tabs.TabPages.Count)
             throw new ArgumentOutOfRangeException(nameof(index));
+        if (_modernLayout) { ModernSelectPage(index); Application.DoEvents(); return; }
         _tabs.SelectedIndex = index;
         _tabs.SelectedTab?.PerformLayout();
         Application.DoEvents();
@@ -531,5 +533,6 @@ internal sealed partial class DashboardForm : Form
         }
         _evidence.Text = string.Join(Environment.NewLine, lines);
         _footer.Text = "LOCAL EVIDENCE  /  READ ONLY  /  " + DateTime.Now.ToString("HH:mm:ss");
+        UpdateModernData();
     }
 }

@@ -34,13 +34,17 @@ internal sealed partial class DashboardForm
     }
     internal string OverviewTextForTest => _overview.Text;
     public ReadabilityMetrics GetReadabilityMetrics() =>
-        new(_overview.Font.SizeInPoints, _sources.Font.SizeInPoints,
-            _metricCaptions[0].Font.SizeInPoints, _sources.RowTemplate.Height,
-            _tabs.Font.SizeInPoints, ClientSize.Width, _tabs.Height);
-
+        _modernLayout
+            ? new ReadabilityMetrics(_overview.Font.Size * 0.75F, _sources.Font.Size * 0.75F,
+                _metricCaptions[0].Font.Size * 0.75F, _sources.RowTemplate.Height,
+                _tabs.Font.Size * 0.75F, ClientSize.Width, _tabs.Height)
+            : new ReadabilityMetrics(_overview.Font.SizeInPoints, _sources.Font.SizeInPoints,
+                _metricCaptions[0].Font.SizeInPoints, _sources.RowTemplate.Height,
+                _tabs.Font.SizeInPoints, ClientSize.Width, _tabs.Height);
     public void ApplyTextScale(float scale)
     {
         _textScale = UiScalePolicy.Normalize(scale);
+        if (_modernLayout) { ApplyModernTextScale(_textScale); return; }
         var layout = Controls.OfType<TableLayoutPanel>().FirstOrDefault()
             ?? throw new InvalidOperationException("Dashboard root layout is unavailable");
         EnsureZoomControls(layout);
@@ -123,6 +127,7 @@ internal sealed partial class DashboardForm
 
     public void RelayoutForDisplay()
     {
+        if (_modernLayout) { LayoutModernHeader(); LayoutModernMetrics(); return; }
         var root = Controls.OfType<TableLayoutPanel>().FirstOrDefault();
         if (root is null) return;
         root.SuspendLayout();

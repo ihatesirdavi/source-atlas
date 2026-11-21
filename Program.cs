@@ -31,8 +31,8 @@ internal static class Program
         var role = options.GetValueOrDefault("--role", "agent-tv");
         if (string.IsNullOrWhiteSpace(dataDirectory) ||
             string.IsNullOrWhiteSpace(resolver) ||
-            (role is not "agent-tv" and not "desktop-lg"))
-            return RecordError("Arguments --data and --resolver required; role agent-tv or desktop-lg only.");
+            !IsRoleAllowed(role, options.ContainsKey("--qa-physical") && options.ContainsKey("--qa-dir")))
+            return RecordError("Approved local receipt directory, resolver and display role required; 50-inch is for isolated QA only.");
 
         if (!Directory.Exists(dataDirectory))
             return RecordError("Private audit data directory unavailable.");
@@ -46,9 +46,10 @@ internal static class Program
         Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
         Application.EnableVisualStyles();
         Application.SetCompatibleTextRenderingDefault(false);
-        var bounds = new Rectangle(target.X + 88, target.Y + 72,
-            Math.Min(target.Width - 176, 1420), Math.Min(target.Height - 144, 900));
-        if (bounds.Width < 760 || bounds.Height < 490 || !target.Contains(bounds))
+        var bounds = role == "main-tv"
+            ? new Rectangle(target.X + 8, target.Y + 8, target.Width - 16, target.Height - 24)
+            : new Rectangle(target.X + 88, target.Y + 72,
+                Math.Min(target.Width - 176, 1420), Math.Min(target.Height - 144, 900));        if (bounds.Width < 760 || bounds.Height < 490 || !target.Contains(bounds))
             return RecordError("Target window does not fit the selected physical display.");
 
         using var form = new DashboardForm(dataDirectory);
@@ -70,6 +71,7 @@ internal static class Program
         if (!string.IsNullOrEmpty(captureDir))
         {
             Directory.CreateDirectory(captureDir);
+            if (options.ContainsKey("--qa-physical")) return RunPhysicalTelevisionQa(form, target, captureDir);
             form.Show();
             Application.DoEvents();
             var testSizes = new (string Name, int Width, int Height)[] {
@@ -130,6 +132,42 @@ internal static class Program
         return 0;
     }
 
+    private static int RunPhysicalTelevisionQa(DashboardForm form, Rectangle target, string captureDir)
+    {
+        if (target.Width != 1920 || target.Height != 1080)
+            throw new InvalidOperationException("Unexpected physical television resolution.");
+        form.Show();
+        form.Activate();
+        Application.DoEvents();
+        var qa = new List<object>();
+        foreach (var (page, index) in new[] {
+            ("overview", 0), ("sources", 1), ("github", 2),
+            ("engagement", 3), ("evidence", 4) })
+        {
+            form.SelectPage(index);
+            form.RefreshData();
+            form.Update();
+            Application.DoEvents();
+            System.Threading.Thread.Sleep(180);
+            using var screen = new Bitmap(target.Width, target.Height);
+            using (var graphics = Graphics.FromImage(screen))
+                graphics.CopyFromScreen(target.Location, Point.Empty, screen.Size);
+            var file = Path.Combine(captureDir, $"tcl50-physical-{page}.png");
+            screen.Save(file, ImageFormat.Png);
+            qa.Add(new {
+                page, role = "main-tv", display = "50S421",
+                captured = "physical.CopyFromScreen", size = $"{target.Width}x{target.Height}",
+                file = Path.GetFileName(file), bytes = new FileInfo(file).Length
+            });
+        }
+        File.WriteAllText(Path.Combine(captureDir, "qa-layout.json"),
+            JsonSerializer.Serialize(qa, new JsonSerializerOptions { WriteIndented = true }));
+        form.Close();
+        return 0;
+    }
+    private static bool IsRoleAllowed(string role, bool isolatedPhysicalQa) =>
+        role is "agent-tv" or "desktop-lg" ||
+        (role == "main-tv" && isolatedPhysicalQa);
     private static Dictionary<string, string> ParseArgs(string[] args)
     {
         var map = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
@@ -137,7 +175,7 @@ internal static class Program
         {
             var key = args[i];
             if (!key.StartsWith("--", StringComparison.Ordinal)) continue;
-            if (key is "--self-test" or "--start-hidden" or "--demo") { map[key] = "true"; continue; }
+            if (key is "--self-test" or "--start-hidden" or "--demo" or "--qa-physical") { map[key] = "true"; continue; }
             if (i + 1 < args.Length && !args[i + 1].StartsWith("--", StringComparison.Ordinal))
                 map[key] = args[++i];
         }
@@ -166,7 +204,8 @@ internal static class Program
         var friendly = v.GetProperty("friendly_name").GetString();
         if (reportedRole != role ||
             (role == "agent-tv" && friendly != "40S325") ||
-            (role == "desktop-lg" && friendly != "LG ULTRAGEAR"))
+            (role == "desktop-lg" && friendly != "LG ULTRAGEAR") ||
+            (role == "main-tv" && friendly != "50S421"))
             throw new InvalidOperationException("Unexpected display hardware identity.");
         return new Rectangle(
             v.GetProperty("x").GetInt32(), v.GetProperty("y").GetInt32(),
@@ -256,6 +295,43 @@ internal static class Program
                     throw new Exception("Zoom controls did not change actual font sizes.");
             }
             cases.Add("native zoom changes visible fonts grids cards and tabs");
+            using (var tv = new DashboardForm(temp))
+            {
+                tv.Size = new Size(1900, 1040);
+                tv.ApplyTextScale(1.30F);
+                tv.PerformLayout();
+                var diagnostic = tv.GetWorkspaceDiagnostics();
+                if (!diagnostic.Modern || diagnostic.NavigationButtons != 5 ||
+                    !diagnostic.NavSeparatesPages || !diagnostic.HidesLegacyTabs ||
+                    !diagnostic.ReadableText || !diagnostic.MetricLabelsFit ||
+                    !diagnostic.OverviewStructured)
+                    throw new Exception("50-inch responsive workspace contract violated.");
+            }
+            cases.Add("real television workspace provides unclipped structure and readable navigation");
+            using (var tvNavigation = new DashboardForm(temp))
+            {
+                tvNavigation.SelectPage(1);
+                var sourcesPage = tvNavigation.GetWorkspaceDiagnostics();
+                if (sourcesPage.SelectedPage != 1 || sourcesPage.VisiblePages != 1)
+                    throw new Exception("Selecting Public Sources did not swap to the sources view.");
+                tvNavigation.SelectPage(4);
+                var evidencePage = tvNavigation.GetWorkspaceDiagnostics();
+                if (evidencePage.SelectedPage != 4 || evidencePage.VisiblePages != 1)
+                    throw new Exception("Selecting Evidence did not swap the visible page.");
+            }
+            cases.Add("every page selection updates one visible workspace panel");
+            using (var polish = new DashboardForm(temp))
+            {
+                polish.ApplyTextScale(1.30F);
+                var ui = polish.GetWorkspaceDiagnostics();
+                if (!ui.EvidenceTable || !ui.ZoomControlsAccessible)
+                    throw new Exception("Large-screen evidence and font controls are not accessible.");
+            }
+            cases.Add("evidence is tabular and zoom buttons remain visible on television");
+            if (!IsRoleAllowed("main-tv", true) || IsRoleAllowed("main-tv", false) ||
+                !IsRoleAllowed("agent-tv", false) || IsRoleAllowed("unknown", true))
+                throw new Exception("50-inch physical preview must never start a second live agent.");
+            cases.Add("main television is authorized for isolated visual QA only");
             if (s.NewStars != 1 || s.NewFollows != 2 || s.Engagement.Count != 1)
                 throw new Exception("Engagement parsing mismatch.");
             cases.Add("bounded engagement receipts");

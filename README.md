@@ -6,7 +6,7 @@ Source Atlas helps turn approved local research files, public references, and Gi
 
 **Status:** Public source preview, v0.1.0. The offline demo is self-contained. Live monitoring requires a separately configured owner-controlled audit bundle. No downloadable production installer or generally supported release is claimed.
 
-![Source Atlas offline sample-data dashboard](docs/screenshots/offline-overview.png)
+![Source Atlas TV-size offline demo, synthetic data](docs/screenshots/tv-offline-overview.png)
 
 ## Try the offline demo
 
@@ -21,8 +21,17 @@ dotnet run --project .\SourceAtlas.csproj --configuration Release -- --demo
 
 This opens an offline, read-only catalog from bundled sample-data. It does **not** authenticate to GitHub, scan private notes, perform social actions, or check live GitHub status. The sample counts and verification statuses are labeled SAMPLE_ONLY and SAMPLE_NOT_VERIFIED.
 
-![Offline public references in Source Atlas](docs/screenshots/offline-public-sources.png)
+![Offline public references in Source Atlas](docs/screenshots/tv-offline-sources.png)
 
+## Television workspace candidate
+
+This unmerged draft reworks the existing WinForms shell for real 50-inch TCL usage at 1920 x 1080 and 200% Windows DPI. It has a persistent left workspace rail, overview status cards, enlarged filterable research/GitHub grids, a searchable evidence hash table and bounded text zoom. The underlying local audit collector and profile permissions do not change.
+
+**Physical-screen QA:** five page screenshots were captured on the real TCL 50S421, and native tests exercise sidebar page switching, isolated physical QA mode, zoom controls and evidence layout. Synthetic demo images are published here; **actual local research screenshots remain private**.
+
+![Offline evidence hash table on TV-size canvas](docs/screenshots/tv-offline-evidence.png)
+
+To validate 50-inch physical layout in an authorized local workstation, use the QA-only flags --qa-physical and --qa-dir together with --role main-tv, --data and the approved --resolver. This path collects screenshots and then exits. It is not allowed to start a second live monitor on the primary TV. Physical acceptance does not imply a signed installer or a generally available production release.
 ## Desktop features
 
 - Five searchable panes: overview, public research references, GitHub repository snapshots, prior engagement receipts, and evidence hashes.
