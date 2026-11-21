@@ -1,0 +1,316 @@
+using System.Diagnostics;
+using System.Runtime.InteropServices;
+using System.Drawing.Imaging;
+using System.Text.Json;
+using System.Windows.Forms;
+
+namespace SourceAtlas;
+
+internal static class Program
+{
+    internal const int ActivateMessage = 0x8042;
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern IntPtr FindWindow(string? className, string title);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool PostMessage(IntPtr window, uint message, IntPtr wparam, IntPtr lparam);
+
+    [STAThread]
+    private static int Main(string[] args)
+    {
+        var options = ParseArgs(args);
+        if (options.ContainsKey("--demo"))
+            return DemoMode.Run(options);
+        if (options.ContainsKey("--self-test"))
+            return SelfTest(options.GetValueOrDefault("--evidence"));
+
+        var dataDirectory = options.GetValueOrDefault("--data");
+        var resolver = options.GetValueOrDefault("--resolver");
+        var role = options.GetValueOrDefault("--role", "agent-tv");
+        if (string.IsNullOrWhiteSpace(dataDirectory) ||
+            string.IsNullOrWhiteSpace(resolver) ||
+            (role is not "agent-tv" and not "desktop-lg"))
+            return RecordError("Arguments --data and --resolver required; role agent-tv or desktop-lg only.");
+
+        if (!Directory.Exists(dataDirectory))
+            return RecordError("Private audit data directory unavailable.");
+        if (!File.Exists(resolver))
+            return RecordError("Approved physical display resolver missing.");
+
+        Rectangle target;
+        try { target = ResolveRole(resolver, role); }
+        catch (Exception e) { return RecordError("Display role unresolved: " + e.GetType().Name); }
+
+        Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
+        Application.EnableVisualStyles();
+        Application.SetCompatibleTextRenderingDefault(false);
+        var bounds = new Rectangle(target.X + 88, target.Y + 72,
+            Math.Min(target.Width - 176, 1420), Math.Min(target.Height - 144, 900));
+        if (bounds.Width < 760 || bounds.Height < 490 || !target.Contains(bounds))
+            return RecordError("Target window does not fit the selected physical display.");
+
+        using var form = new DashboardForm(dataDirectory);
+        form.StartPosition = FormStartPosition.Manual;
+        form.Bounds = bounds;
+        var preferencePath = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "SourceAtlas", "ui-preferences.json");
+        var uiScale = UiScalePolicy.ReadPreference(preferencePath, role);
+        form.ConfigureZoomPersistence(preferencePath);
+        if (options.TryGetValue("--ui-scale", out var zoomOverride) &&
+            float.TryParse(zoomOverride, System.Globalization.NumberStyles.Float,
+                System.Globalization.CultureInfo.InvariantCulture, out var parsedZoom))
+            uiScale = UiScalePolicy.Normalize(parsedZoom);
+        form.ApplyTextScale(uiScale);
+        form.Shown += (_, _) => form.RelayoutForDisplay();
+
+        var captureDir = options.GetValueOrDefault("--qa-dir");
+        if (!string.IsNullOrEmpty(captureDir))
+        {
+            Directory.CreateDirectory(captureDir);
+            form.Show();
+            Application.DoEvents();
+            var testSizes = new (string Name, int Width, int Height)[] {
+                ("agent-tcl40-100pct", 1320, 800),
+                ("lg-100pct-proxy", 1460, 870),
+                ("tcl50-200pct-logical-proxy", 960, 600)
+            };
+            var qa = new List<object>();
+            foreach (var (name, width, height) in testSizes)
+            {
+                form.Size = new Size(width, height);
+                Application.DoEvents();
+                form.RefreshData();
+                form.Update();
+                var pages = name.StartsWith("agent-", StringComparison.Ordinal)
+                    ? new[] { ("overview", 0), ("sources", 1), ("github", 2),
+                              ("engagement", 3), ("evidence", 4) }
+                    : new[] { ("sources", 1) };
+                foreach (var (page, index) in pages)
+                {
+                    form.SelectPage(index);
+                    form.Update();
+                    using var bitmap = new Bitmap(width, height);
+                    form.DrawToBitmap(bitmap, new Rectangle(Point.Empty, bitmap.Size));
+                    var file = Path.Combine(captureDir, name + "-" + page + ".png");
+                    bitmap.Save(file, ImageFormat.Png);
+                    qa.Add(new {
+                        profile = name, page, size = width + "x" + height,
+                        bytes = new FileInfo(file).Length,
+                        formContainsClient = form.ClientSize.Width > 0 && form.ClientSize.Height > 0,
+                        visualRendering = "WinForms DrawToBitmap; no physical 50-inch display window"
+                    });
+                }
+            }
+            File.WriteAllText(Path.Combine(captureDir, "qa-layout.json"),
+                JsonSerializer.Serialize(qa, new JsonSerializerOptions { WriteIndented = true }));
+            form.Close();
+            return 0;
+        }
+
+        var sourceRoot = options.GetValueOrDefault("--root");
+        if (string.IsNullOrWhiteSpace(sourceRoot) || !Directory.Exists(sourceRoot))
+            return RecordError("Approved profile repository --root required for resident live mode.");
+        using var instance = new Mutex(true, @"Local\SourceAtlas-GithubPublishing-Live-v1", out var first);
+        if (!first)
+        {
+            var existing = FindWindow(null, "Source Atlas | Local Research and Publishing");
+            if (existing != IntPtr.Zero &&
+                PostMessage(existing, ActivateMessage, IntPtr.Zero, IntPtr.Zero))
+                return 0;
+            return RecordError("Already running, but activation of the existing window failed.");
+        }
+        form.EnableLiveMonitoring(sourceRoot);
+        if (options.ContainsKey("--start-hidden"))
+            form.Shown += (_, _) => form.HideToTrayAtStartup();
+        Application.Run(form);
+        instance.ReleaseMutex();
+        return 0;
+    }
+
+    private static Dictionary<string, string> ParseArgs(string[] args)
+    {
+        var map = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        for (var i = 0; i < args.Length; i++)
+        {
+            var key = args[i];
+            if (!key.StartsWith("--", StringComparison.Ordinal)) continue;
+            if (key is "--self-test" or "--start-hidden" or "--demo") { map[key] = "true"; continue; }
+            if (i + 1 < args.Length && !args[i + 1].StartsWith("--", StringComparison.Ordinal))
+                map[key] = args[++i];
+        }
+        return map;
+    }
+
+    private static Rectangle ResolveRole(string script, string role)
+    {
+        var info = new ProcessStartInfo {
+            FileName = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows),
+                "System32", "WindowsPowerShell", "v1.0", "powershell.exe"),
+            UseShellExecute = false, CreateNoWindow = true,
+            RedirectStandardOutput = true, RedirectStandardError = true,
+        };
+        foreach (var arg in new[] { "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden",
+                                    "-File", script, "-Role", role })
+            info.ArgumentList.Add(arg);
+        using var proc = Process.Start(info) ?? throw new InvalidOperationException();
+        var output = proc.StandardOutput.ReadToEnd();
+        _ = proc.StandardError.ReadToEnd();
+        if (!proc.WaitForExit(15000) || proc.ExitCode != 0)
+            throw new InvalidOperationException("Native display role query failed.");
+        using var doc = JsonDocument.Parse(output);
+        var v = doc.RootElement;
+        var reportedRole = v.GetProperty("role").GetString();
+        var friendly = v.GetProperty("friendly_name").GetString();
+        if (reportedRole != role ||
+            (role == "agent-tv" && friendly != "40S325") ||
+            (role == "desktop-lg" && friendly != "LG ULTRAGEAR"))
+            throw new InvalidOperationException("Unexpected display hardware identity.");
+        return new Rectangle(
+            v.GetProperty("x").GetInt32(), v.GetProperty("y").GetInt32(),
+            v.GetProperty("width").GetInt32(), v.GetProperty("height").GetInt32());
+    }
+
+    private static int RecordError(string message)
+    {
+        try {
+            var dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "SourceAtlas");
+            Directory.CreateDirectory(dir);
+            File.WriteAllText(Path.Combine(dir, "last-error.txt"),
+                DateTimeOffset.Now.ToString("O") + ": " + message + Environment.NewLine);
+        } catch (IOException) { }
+        return 2;
+    }
+
+    private static int SelfTest(string? evidence)
+    {
+        var cases = new List<string>();
+        var temp = Path.Combine(Path.GetTempPath(), "source-atlas-" + Guid.NewGuid().ToString("N"));
+        try {
+            Directory.CreateDirectory(temp);
+            File.WriteAllText(Path.Combine(temp, "latest.json"),
+                """{"status":"PASS","checked_at_utc":"2026-11-20T15:00:00Z","repository_count":5,"pull_requests":[{},{}],"research_sources":{"status":"DISCOVERED_NOT_LIVE_VERIFIED"}}""");
+            File.WriteAllText(Path.Combine(temp, "source-review-latest.json"),
+                """{"candidates":[{"kind":"arxiv_paper","public_url":"https://arxiv.org/abs/2610.14162","mentions":3,"source_areas":["Research"],"verification":"DISCOVERED_NOT_LIVE_VERIFIED"},{"kind":"github_repo","public_url":"https://github.com/HazyResearch/ncm","mentions":7,"source_areas":["Research"],"verification":"DISCOVERED_NOT_LIVE_VERIFIED"},{"kind":"excluded","public_url":"http://localhost/","mentions":99}]}""");
+            File.WriteAllText(Path.Combine(temp, "PUBLIC_RESEARCH_GITHUB_VALIDATION_20261120.json"),
+                """{"verified_at_utc":"2026-11-20T15:00:00Z","repositories":[{"source_url":"https://github.com/HazyResearch/ncm","citations":7,"status":"PUBLIC_ACTIVE","canonical":"HazyResearch/ncm","license_spdx":"MIT","viewer_starred":true}]}""");
+            File.WriteAllText(Path.Combine(temp, "STACK_ENGAGEMENT_RESEARCH_U006_20261120.json"),
+                """{"new_stars":1,"new_follows":2,"actions":[{"kind":"star","identity":"HazyResearch/ncm","status":"STAR_VERIFIED"}]}""");
+            var s = AuditSnapshot.Load(temp);
+            if (s.AuditStatus != "PASS" || s.PublicLinksChecked != 5 || s.PullRequestsChecked != 2)
+                throw new Exception("Audit metadata parsing mismatch.");
+            cases.Add("audit fields and PR counts");
+            if (s.DiscoveredCount != 2 || s.SourceKinds["arxiv_paper"] != 1 || s.Sources[0].Mentions != 3)
+                throw new Exception("Public source filtering mismatch.");
+            cases.Add("public-source classification and local URL exclusion");
+            if (s.VerifiedActiveGithub != 1 || s.Repositories[0].Starred != "Yes")
+                throw new Exception("GitHub validation mismatch.");
+            cases.Add("GitHub metadata");
+            if (s.GithubSnapshotUtc != "2026-11-20T15:00:00Z")
+                throw new Exception("GitHub snapshot freshness provenance missing.");
+            cases.Add("saved GitHub verification timestamp is not live status");
+            if (!DemoMode.VerifyBundledData(out var demoReason))
+                throw new Exception("Bundled offline demo is unsafe or incomplete: " + demoReason);
+            cases.Add("public offline demo is self-contained and never claims real verification");
+            using (var offline = new DashboardForm(Path.Combine(AppContext.BaseDirectory, "sample-data")))
+            {
+                if (offline.OverviewTextForTest.Contains("LIVE LOCAL RESEARCH AGENT", StringComparison.Ordinal))
+                    throw new Exception("Offline demo falsely advertises live monitoring.");
+                if (!offline.OverviewTextForTest.Contains("SAMPLE_ONLY", StringComparison.Ordinal))
+                    throw new Exception("Offline demo has no unambiguous sample disclosure.");
+            }
+            cases.Add("public demo never misrepresents sample sources as a live agent");
+            if (UiScalePolicy.DefaultForRole("agent-tv") < 1.25F ||
+                UiScalePolicy.DefaultForRole("desktop-lg") < 1.10F ||
+                UiScalePolicy.Normalize(-2) != 1.0F ||
+                UiScalePolicy.Normalize(99) != 1.70F ||
+                UiScalePolicy.Normalize(float.NaN) != 1.0F)
+                throw new Exception("Native large-screen zoom bounds are invalid.");
+            cases.Add("readable role defaults and safe adjustable zoom limits");
+            var preference = Path.Combine(temp, "ui-preferences.json");
+            UiScalePolicy.Store(preference, 1.55F);
+            if (Math.Abs(UiScalePolicy.ReadPreference(preference, "agent-tv") - 1.55F) > 0.001F)
+                throw new Exception("Owner text zoom did not persist correctly.");
+            File.WriteAllText(preference, "{not json");
+            if (UiScalePolicy.ReadPreference(preference, "desktop-lg") != 1.17F)
+                throw new Exception("Broken owner preference did not fall back safely.");
+            cases.Add("local font zoom preference persists and invalid files degrade safely");
+            using (var visual = new DashboardForm(temp))
+            {
+                visual.ApplyTextScale(1.45F);
+                var readable = visual.GetReadabilityMetrics();
+                if (readable.OverviewPoints < 16F ||
+                    readable.GridPoints < 14F ||
+                    readable.MetricCaptionPoints < 11.5F ||
+                    readable.RowHeight < 49 ||
+                    readable.TabPoints < 14F)
+                    throw new Exception("Large-display fonts or grid row heights are too small.");
+                if (readable.LayoutWidth <= 0 || readable.TabHeight <= 0)
+                    throw new Exception("Large-display tab layout is not measurable.");
+                visual.ApplyTextScale(1.0F);
+                var normal = visual.GetReadabilityMetrics();
+                if (normal.OverviewPoints >= readable.OverviewPoints ||
+                    normal.GridPoints >= readable.GridPoints)
+                    throw new Exception("Zoom controls did not change actual font sizes.");
+            }
+            cases.Add("native zoom changes visible fonts grids cards and tabs");
+            if (s.NewStars != 1 || s.NewFollows != 2 || s.Engagement.Count != 1)
+                throw new Exception("Engagement parsing mismatch.");
+            cases.Add("bounded engagement receipts");
+            if (s.Evidence.Count != 4 || s.Evidence.Any(x => x.Sha256.Length != 64))
+                throw new Exception("Evidence hash mismatch.");
+            cases.Add("immutable source hash metadata");
+            var malformed = Path.Combine(temp, "source-review-latest.json");
+            File.WriteAllText(malformed, "{invalid");
+            var degraded = AuditSnapshot.Load(temp);
+            if (!degraded.RootError.Contains("INVALID_JSON") || degraded.DiscoveredCount != 0)
+                throw new Exception("Malformed source receipt should degrade safely.");
+            cases.Add("malformed source safety");
+            var policy = new LiveRunPolicy(TimeSpan.FromMinutes(15), TimeSpan.FromSeconds(45));
+            var t0 = DateTimeOffset.Parse("2026-11-21T06:30:00+00:00");
+            if (!policy.TryClaim(t0, false)) throw new Exception("First live run not admitted.");
+            if (policy.TryClaim(t0.AddSeconds(4), false)) throw new Exception("Event storm ran twice.");
+            if (!policy.TryClaim(t0.AddSeconds(46), false)) throw new Exception("Debounce over-throttled.");
+            cases.Add("one process coalesces source events");
+            var quiet = policy.TimeUntilAllowed(t0.AddSeconds(48));
+            if (quiet != TimeSpan.FromSeconds(43))
+                throw new Exception("Throttled file change cannot be deferred correctly.");
+            cases.Add("deferred source change quiet-time calculation");
+
+            if (!policy.TryClaim(t0.AddSeconds(47), true))
+                throw new Exception("Manual refresh should bypass quiet period.");
+            if (policy.IsPeriodicDue(t0.AddSeconds(48)))
+                throw new Exception("Periodic run must not double-run after manual.");
+            if (!policy.IsPeriodicDue(t0.AddMinutes(16)))
+                throw new Exception("Periodic refresh did not become due.");
+            cases.Add("bounded live refresh and manual override");
+
+            if (!LiveRunPolicy.IsSourceFile("test.md") ||
+                !LiveRunPolicy.IsSourceFile("paper.bib") ||
+                LiveRunPolicy.IsSourceFile("my_password.txt") ||
+                LiveRunPolicy.IsSourceFile("app.exe") ||
+                LiveRunPolicy.IsSourceFile("project.assets.json"))
+                throw new Exception("Source event filtering mismatch.");
+            cases.Add("research source change allowlist");
+
+            if (!LiveRunPolicy.ShouldWatch("ResearchDocs") ||
+                LiveRunPolicy.ShouldWatch("bad/research") ||
+                LiveRunPolicy.ShouldWatch("../private"))
+                throw new Exception("Watcher root identity validation mismatch.");
+            cases.Add("bounded source watcher labels");
+            if (!string.IsNullOrEmpty(evidence))
+                File.WriteAllText(evidence, JsonSerializer.Serialize(
+                    new { status = "PASS", tests = cases, count = cases.Count },
+                    new JsonSerializerOptions { WriteIndented = true }));
+            return 0;
+        }
+        catch (Exception e) {
+            if (!string.IsNullOrEmpty(evidence))
+                File.WriteAllText(evidence, JsonSerializer.Serialize(new { status="FAIL", failure=e.Message, tests=cases }));
+            return 1;
+        }
+        finally { try { Directory.Delete(temp, true); } catch (IOException) { } }
+    }
+}

@@ -1,0 +1,6 @@
+{
+  "verified_at_utc":"SAMPLE_ONLY",
+  "repositories":[
+    {"source_url":"https://github.com/dotnet/winforms","citations":2,"status":"SAMPLE_NOT_VERIFIED","canonical":"dotnet/winforms","license_spdx":"NOT_CHECKED","viewer_starred":false}
+  ]
+}

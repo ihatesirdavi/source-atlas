@@ -1,0 +1,35 @@
+name: Windows source verification
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  native:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Install supported .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: Restore and build
+        shell: pwsh
+        run: |
+          dotnet restore .\SourceAtlas.csproj
+          if ($LASTEXITCODE -ne 0) { throw "restore failed" }
+          dotnet build .\SourceAtlas.csproj --configuration Release --no-restore --warnaserror
+          if ($LASTEXITCODE -ne 0) { throw "build failed" }
+      - name: Native offline regression tests
+        shell: pwsh
+        run: |
+          $evidence = Join-Path $env:RUNNER_TEMP 'source-atlas-native-tests.json'
+          & dotnet .\bin\Release\net10.0-windows\SourceAtlas.dll --self-test --evidence $evidence
+          if ($LASTEXITCODE -ne 0 -or -not (Test-Path $evidence)) { throw "native tests failed" }
+          $report = Get-Content $evidence -Raw | ConvertFrom-Json
+          if ($report.status -ne 'PASS' -or $report.count -lt 17) { throw "incomplete native tests" }
+          Write-Output "Native tests: $($report.count) PASS"

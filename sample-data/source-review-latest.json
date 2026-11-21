@@ -1,0 +1,7 @@
+{
+  "candidates": [
+    {"kind":"github_repo","public_url":"https://github.com/dotnet/winforms","mentions":2,"source_areas":["Example catalog"],"verification":"SAMPLE_NOT_VERIFIED"},
+    {"kind":"documentation","public_url":"https://learn.microsoft.com/dotnet/desktop/winforms/","mentions":1,"source_areas":["Example catalog"],"verification":"SAMPLE_NOT_VERIFIED"},
+    {"kind":"public_example","public_url":"https://example.org/","mentions":1,"source_areas":["Example catalog"],"verification":"SAMPLE_NOT_VERIFIED"}
+  ]
+}
