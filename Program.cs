@@ -17,6 +17,13 @@ internal static class Program
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool PostMessage(IntPtr window, uint message, IntPtr wparam, IntPtr lparam);
 
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetForegroundWindow();
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool PrintWindow(IntPtr window, IntPtr hdc, uint flags);
+
     [STAThread]
     private static int Main(string[] args)
     {
@@ -132,6 +139,15 @@ internal static class Program
         return 0;
     }
 
+    private static void AssertCaptureWindow(IntPtr expected, IntPtr foreground)
+    {
+        if (expected == IntPtr.Zero || foreground != expected)
+            throw new InvalidOperationException("Physical QA capture denied: Source Atlas is not the foreground window.");
+    }
+
+    private static string ClassifyCaptureMode(IntPtr expected, IntPtr foreground) =>
+        expected == IntPtr.Zero ? "invalid" :
+        expected == foreground ? "physical.CopyFromScreen" : "window.PrintWindow.not_physical_screen";
     private static int RunPhysicalTelevisionQa(DashboardForm form, Rectangle target, string captureDir)
     {
         if (target.Width != 1920 || target.Height != 1080)
@@ -149,14 +165,36 @@ internal static class Program
             form.Update();
             Application.DoEvents();
             System.Threading.Thread.Sleep(180);
-            using var screen = new Bitmap(target.Width, target.Height);
+            var captureMode = ClassifyCaptureMode(form.Handle, GetForegroundWindow());
+            if (captureMode == "invalid")
+                throw new InvalidOperationException("Cannot capture a missing Source Atlas window.");
+            using var screen = captureMode == "physical.CopyFromScreen"
+                ? new Bitmap(target.Width, target.Height)
+                : new Bitmap(form.Width, form.Height);
             using (var graphics = Graphics.FromImage(screen))
-                graphics.CopyFromScreen(target.Location, Point.Empty, screen.Size);
-            var file = Path.Combine(captureDir, $"tcl50-physical-{page}.png");
+            {
+                if (captureMode == "physical.CopyFromScreen")
+                {
+                    AssertCaptureWindow(form.Handle, GetForegroundWindow());
+                    graphics.CopyFromScreen(target.Location, Point.Empty, screen.Size);
+                }
+                else
+                {
+                    var hdc = graphics.GetHdc();
+                    try
+                    {
+                        if (!PrintWindow(form.Handle, hdc, 2))
+                            throw new InvalidOperationException("Source Atlas window-specific QA capture failed.");
+                    }
+                    finally { graphics.ReleaseHdc(hdc); }
+                }
+            }
+            var file = Path.Combine(captureDir, $"tcl50-qa-{page}.png");
             screen.Save(file, ImageFormat.Png);
             qa.Add(new {
-                page, role = "main-tv", display = "50S421",
-                captured = "physical.CopyFromScreen", size = $"{target.Width}x{target.Height}",
+                page, role = "main-tv", display = "50S421", captured = captureMode,
+                displaySize = $"{target.Width}x{target.Height}",
+                size = $"{screen.Width}x{screen.Height}",
                 file = Path.GetFileName(file), bytes = new FileInfo(file).Length
             });
         }
@@ -332,6 +370,25 @@ internal static class Program
                 !IsRoleAllowed("agent-tv", false) || IsRoleAllowed("unknown", true))
                 throw new Exception("50-inch physical preview must never start a second live agent.");
             cases.Add("main television is authorized for isolated visual QA only");
+            // Reject physical screenshots when another application covers the expected window.
+            AssertCaptureWindow(new IntPtr(51), new IntPtr(51));
+            foreach (var (expected, actual) in new[] {
+                (new IntPtr(51), new IntPtr(52)),
+                (IntPtr.Zero, IntPtr.Zero),
+                (new IntPtr(51), IntPtr.Zero) })
+            {
+                var rejected = false;
+                try { AssertCaptureWindow(expected, actual); }
+                catch (InvalidOperationException) { rejected = true; }
+                if (!rejected)
+                    throw new Exception("Physical QA accepted another foreground window or an invalid handle.");
+            }
+            cases.Add("physical screen capture requires this app to be the foreground window");
+            if (ClassifyCaptureMode(new IntPtr(51), new IntPtr(51)) != "physical.CopyFromScreen" ||
+                ClassifyCaptureMode(new IntPtr(51), new IntPtr(52)) != "window.PrintWindow.not_physical_screen" ||
+                ClassifyCaptureMode(IntPtr.Zero, IntPtr.Zero) != "invalid")
+                throw new Exception("Capture mode incorrectly labels an obstructed or invalid window as physical evidence.");
+            cases.Add("foreground screen and window-only screenshots have distinct evidence classes");
             if (s.NewStars != 1 || s.NewFollows != 2 || s.Engagement.Count != 1)
                 throw new Exception("Engagement parsing mismatch.");
             cases.Add("bounded engagement receipts");

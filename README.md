@@ -27,7 +27,7 @@ This opens an offline, read-only catalog from bundled sample-data. It does **not
 
 This unmerged draft reworks the existing WinForms shell for real 50-inch TCL usage at 1920 x 1080 and 200% Windows DPI. It has a persistent left workspace rail, overview status cards, enlarged filterable research/GitHub grids, a searchable evidence hash table and bounded text zoom. The underlying local audit collector and profile permissions do not change.
 
-**Physical-screen QA:** five page screenshots were captured on the real TCL 50S421, and native tests exercise sidebar page switching, isolated physical QA mode, zoom controls and evidence layout. Synthetic demo images are published here; **actual local research screenshots remain private**.
+**Physical-screen QA:** the isolated QA mode targets the real TCL 50S421 display geometry and DPI. Native tests exercise sidebar page switching, zoom controls and evidence layout. Each capture receipt identifies its method: `physical.CopyFromScreen` only when Source Atlas owns the foreground, or `window.PrintWindow.not_physical_screen` for a window-specific capture when another application covers the display. A window-only capture does **not** prove the candidate was unobstructed on the physical screen. Private research screenshots stay local; synthetic demo images are published here.
 
 ![Offline evidence hash table on TV-size canvas](docs/screenshots/tv-offline-evidence.png)
 
