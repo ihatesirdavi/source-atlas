@@ -57,10 +57,11 @@ internal static class DemoMode
         Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
         Application.EnableVisualStyles();
         Application.SetCompatibleTextRenderingDefault(false);
+        var captureForTv = args.ContainsKey("--demo-qa-dir");
         using var form = new DashboardForm(DataDir) {
             Text = "Source Atlas | OFFLINE SAMPLE (no GitHub account connected)",
             StartPosition = FormStartPosition.CenterScreen,
-            Size = new Size(1320, 850),
+            Size = captureForTv ? new Size(1904, 1056) : new Size(1320, 850),
         };
         var zoom = 1.2F;
         if (args.TryGetValue("--ui-scale", out var requested) &&
