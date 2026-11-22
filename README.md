@@ -56,7 +56,7 @@ Example invocation (replace placeholders with approved local paths):
 .\bin\Release\net10.0-windows\SourceAtlas.exe --data "<private-receipts-directory>" --resolver "<approved-display-resolver.ps1>" --role agent-tv --root "<authorized-profile-checkout>"
 ~~~
 
-An optional --start-hidden flag starts in the system tray. Monitor state exists only while that Windows user session is running. An optional --ui-scale 1.50 changes the starting font zoom, while A− and A+ save the user's choice locally.
+An optional --start-hidden flag starts in the system tray. Monitor state exists only while that Windows user session is running. For `--start-hidden` only, initial display-role discovery allows three additional fail-closed attempts (5, 10 and 15 seconds between attempts) if Windows monitor enumeration is temporarily unavailable at logon. It never guesses another physical display, moves a window, starts another service or grants deployment authority; it can still exit if the correct role is not identified. An optional --ui-scale 1.50 changes the starting font zoom, while A− and A+ save the user's choice locally.
 
 The repository intentionally **does not** ship real notes, private file lists, authentication details, installed audit scripts, user-machine startup shortcuts, or confidential evidence. The sample-data schema is useful for offline UI exploration; it does not authorize reading private research.
 

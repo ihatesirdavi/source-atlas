@@ -50,7 +50,10 @@ internal static class Program
             return RecordError("Approved physical display resolver missing.");
 
         Rectangle target;
-        try { target = ResolveRole(resolver, role); }
+        try {
+            target = ResolveRoleAtStartup(() => ResolveRole(resolver, role),
+                options.ContainsKey("--start-hidden"), delay => System.Threading.Thread.Sleep(delay));
+        }
         catch (Exception e) { return RecordError("Display role unresolved: " + e.GetType().Name); }
 
         Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
@@ -223,6 +226,24 @@ internal static class Program
         return map;
     }
 
+    /// <summary>
+    /// Display PnP discovery can lag a Windows logon. Retry only hidden session startup;
+    /// never pick a different display, reposition a window or create another scheduler.
+    /// </summary>
+    private static Rectangle ResolveRoleAtStartup(Func<Rectangle> resolve, bool startHidden,
+                                                   Action<TimeSpan> wait)
+    {
+        var delays = new[] { TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(10),
+                             TimeSpan.FromSeconds(15) };
+        for (var attempt = 0; ; attempt++)
+        {
+            try { return resolve(); }
+            catch (InvalidOperationException) when (startHidden && attempt < delays.Length)
+            {
+                wait(delays[attempt]);
+            }
+        }
+    }
     private static Rectangle ResolveRole(string script, string role)
     {
         var info = new ProcessStartInfo {
@@ -467,6 +488,45 @@ internal static class Program
             if (live.Verdict != "PROCESS_CONFIRMED" || live.ReportedStatus != "WATCHING")
                 throw new Exception("Fresh status plus matching process lifetime must be distinguishable.");
             cases.Add("only fresh state and verified process yield process-level confirmation");
+            // U016 RED: PnP can be unavailable briefly during user logon.
+            var discoveryTries = 0;
+            var retryDelays = new List<TimeSpan>();
+            var eventuallyResolved = ResolveRoleAtStartup(() => {
+                discoveryTries++;
+                if (discoveryTries <= 2) throw new InvalidOperationException("PnP not yet ready");
+                return new Rectangle(1, 2, 1920, 1080);
+            }, true, retryDelays.Add);
+            if (discoveryTries != 3 || eventuallyResolved.Width != 1920 ||
+                retryDelays.Count != 2 || retryDelays[0] != TimeSpan.FromSeconds(5) ||
+                retryDelays[1] != TimeSpan.FromSeconds(10))
+                throw new Exception("Hidden startup did not recover after bounded display discovery retries.");
+            cases.Add("hidden startup retries transient resolver failure with bounded delays");
+
+            var ordinaryAttempts = 0;
+            var ordinaryFailed = false;
+            try {
+                ResolveRoleAtStartup(() => {
+                    ordinaryAttempts++;
+                    throw new InvalidOperationException("Unresolved physical display");
+                }, false, _ => throw new Exception("Normal UI must not wait on role failure"));
+            } catch (InvalidOperationException) { ordinaryFailed = true; }
+            if (!ordinaryFailed || ordinaryAttempts != 1)
+                throw new Exception("Non-hidden launch must fail immediately without hidden retries.");
+            cases.Add("non-hidden display failure refuses retry or fallback display");
+
+            var exhaustedTries = 0;
+            var exhaustedWaits = new List<TimeSpan>();
+            var exhaustedAsExpected = false;
+            try {
+                ResolveRoleAtStartup(() => {
+                    exhaustedTries++;
+                    throw new InvalidOperationException("TCL PnP unresolved");
+                }, true, exhaustedWaits.Add);
+            } catch (InvalidOperationException) { exhaustedAsExpected = true; }
+            if (!exhaustedAsExpected || exhaustedTries != 4 || exhaustedWaits.Count != 3 ||
+                exhaustedWaits.Aggregate(TimeSpan.Zero, (a, b) => a + b) != TimeSpan.FromSeconds(30))
+                throw new Exception("Startup must fail closed after thirty seconds without guessing a display.");
+            cases.Add("hidden startup stops after bounded retries with no display fallback");
             if (!string.IsNullOrEmpty(evidence))
                 File.WriteAllText(evidence, JsonSerializer.Serialize(
                     new { status = "PASS", tests = cases, count = cases.Count },
