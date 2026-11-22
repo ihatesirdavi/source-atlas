@@ -32,6 +32,9 @@ internal static class Program
             return DemoMode.Run(options);
         if (options.ContainsKey("--self-test"))
             return SelfTest(options.GetValueOrDefault("--evidence"));
+        if (options.ContainsKey("--check-live"))
+            return ResidentStateHealth.CheckAndWrite(options.GetValueOrDefault("--data"),
+                                                     options.GetValueOrDefault("--evidence"));
 
         var dataDirectory = options.GetValueOrDefault("--data");
         var resolver = options.GetValueOrDefault("--resolver");
@@ -213,7 +216,7 @@ internal static class Program
         {
             var key = args[i];
             if (!key.StartsWith("--", StringComparison.Ordinal)) continue;
-            if (key is "--self-test" or "--start-hidden" or "--demo" or "--qa-physical") { map[key] = "true"; continue; }
+            if (key is "--self-test" or "--start-hidden" or "--demo" or "--qa-physical" or "--check-live") { map[key] = "true"; continue; }
             if (i + 1 < args.Length && !args[i + 1].StartsWith("--", StringComparison.Ordinal))
                 map[key] = args[++i];
         }
@@ -433,6 +436,37 @@ internal static class Program
                 LiveRunPolicy.ShouldWatch("../private"))
                 throw new Exception("Watcher root identity validation mismatch.");
             cases.Add("bounded source watcher labels");
+            // U015 RED: a persisted WATCHING receipt alone never proves a resident survived reboot.
+            var checkpoint = DateTimeOffset.Parse("2026-11-22T12:00:00+00:00");
+            var freshState = JsonSerializer.Serialize(new {
+                schema = "source-atlas-live-state-v1",
+                updated_at_utc = checkpoint.AddMinutes(-1).ToString("O"),
+                process_id = 4242,
+                status = "WATCHING"
+            });
+            var staleState = JsonSerializer.Serialize(new {
+                schema = "source-atlas-live-state-v1",
+                updated_at_utc = checkpoint.AddHours(-6).ToString("O"),
+                process_id = 4242,
+                status = "WATCHING"
+            });
+            if (ResidentStateHealth.Assess(null, checkpoint, _ => null).Verdict != "STATE_MISSING" ||
+                ResidentStateHealth.Assess("{broken", checkpoint, _ => null).Verdict != "STATE_INVALID")
+                throw new Exception("Missing/malformed resident receipt must not report a running monitor.");
+            cases.Add("resident status handles absent and invalid receipts");
+            if (ResidentStateHealth.Assess(staleState, checkpoint, _ => checkpoint.AddHours(-7)).Verdict != "STATE_STALE")
+                throw new Exception("Old WATCHING state was incorrectly accepted after reboot.");
+            cases.Add("stale persisted WATCHING is not operational liveness");
+            if (ResidentStateHealth.Assess(freshState, checkpoint, _ => null).Verdict != "PROCESS_UNVERIFIED")
+                throw new Exception("Missing process cannot be trusted from a saved PID.");
+            cases.Add("saved PID without verified native process is untrusted");
+            if (ResidentStateHealth.Assess(freshState, checkpoint, _ => checkpoint).Verdict != "PID_REUSED")
+                throw new Exception("A reused PID must not satisfy stale ownership.");
+            cases.Add("process start time prevents PID-reuse false positive");
+            var live = ResidentStateHealth.Assess(freshState, checkpoint, _ => checkpoint.AddMinutes(-2));
+            if (live.Verdict != "PROCESS_CONFIRMED" || live.ReportedStatus != "WATCHING")
+                throw new Exception("Fresh status plus matching process lifetime must be distinguishable.");
+            cases.Add("only fresh state and verified process yield process-level confirmation");
             if (!string.IsNullOrEmpty(evidence))
                 File.WriteAllText(evidence, JsonSerializer.Serialize(
                     new { status = "PASS", tests = cases, count = cases.Count },

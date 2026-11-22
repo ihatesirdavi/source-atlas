@@ -60,6 +60,15 @@ An optional --start-hidden flag starts in the system tray. Monitor state exists 
 
 The repository intentionally **does not** ship real notes, private file lists, authentication details, installed audit scripts, user-machine startup shortcuts, or confidential evidence. The sample-data schema is useful for offline UI exploration; it does not authorize reading private research.
 
+## Read-only post-restart resident check
+
+A previous `source-atlas-live-state.json` can say `WATCHING` even when that old PID no longer exists. Neither its saved text nor a prior audit `PASS` establishes restart recovery. The source-only diagnostic checks timestamp freshness, PID lifetime, expected process name and the current Windows session **without starting or stopping any resident process**:
+
+~~~powershell
+dotnet .\bin\Release\net10.0-windows\SourceAtlas.dll --check-live --data "<approved-private-receipts-directory>" --evidence "<new-private-report-file>.json"
+~~~
+
+The JSON evidence uses `source-atlas-resident-check-v1`. Exit `0` means `PROCESS_CONFIRMED` (process identity only, **not** authenticated audit/heartbeat health); exit `3` means missing, invalid, stale, time-inconsistent or unverified process state; exit `2` means invalid input/evidence write. Evidence uses create-new semantics so an existing receipt is never silently overwritten. Run this headlessly in an admitted user session and examine the receipt; do not bypass Control or install a new scheduler to force persistence. An installed app and the source-branch diagnostic remain distinct until the original owner approves an installer/release.
 ## Build and verify
 
 ~~~powershell
